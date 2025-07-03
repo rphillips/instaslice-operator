@@ -6,18 +6,17 @@ metadata:
       [
         {
           "apiVersion": "inference.redhat.com/v1alpha1",
-          "kind": "Instaslice",
+          "kind": "DASOperator",
           "metadata": {
-            "labels": {
-              "app.kubernetes.io/created-by": "instaslice-operator",
-              "app.kubernetes.io/instance": "instaslice-sample",
-              "app.kubernetes.io/managed-by": "kustomize",
-              "app.kubernetes.io/name": "instaslice",
-              "app.kubernetes.io/part-of": "instaslice-operator"
-            },
-            "name": "instaslice-sample"
+            "name": "cluster",
+            "namespace": "das-operator"
           },
-          "spec": null
+          "spec": {
+            "managementState": "Managed",
+            "logLevel": "Normal",
+            "operatorLogLevel": "Normal",
+            "emulatedMode":  "enabled"
+          }
         }
       ]
     features.operators.openshift.io/cnf: "false"
