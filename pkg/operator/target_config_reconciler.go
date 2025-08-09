@@ -49,7 +49,6 @@ type TargetConfigReconciler struct {
 	discoveryClient            discovery.DiscoveryInterface
 	dynamicClient              dynamic.Interface
 	eventRecorder              events.Recorder
-	generations                []operatorsv1.GenerationStatus
 	instasliceoperatorClient   *operatorclient.DASOperatorSetClient
 	kubeClient                 kubernetes.Interface
 	kubeInformersForNamespaces v1helpers.KubeInformersForNamespaces
@@ -149,17 +148,17 @@ func (c *TargetConfigReconciler) sync(ctx context.Context, syncCtx factory.SyncC
 		UID:        sliceOperator.UID,
 	}
 
-	daemonset, err := c.manageDaemonset(ctx, ownerReference)
+	daemonset, err := c.manageDaemonset(ctx, ownerReference, sliceOperator)
 	if err != nil {
 		return err
 	}
 
-	scheduler, err := c.manageScheduler(ctx, ownerReference)
+	scheduler, err := c.manageScheduler(ctx, ownerReference, sliceOperator)
 	if err != nil {
 		return err
 	}
 
-	webhook, err := c.manageMutatingWebhookDeployment(ctx, ownerReference)
+	webhook, err := c.manageMutatingWebhookDeployment(ctx, ownerReference, sliceOperator)
 	if err != nil {
 		return err
 	}
@@ -168,7 +167,7 @@ func (c *TargetConfigReconciler) sync(ctx context.Context, syncCtx factory.SyncC
 		return err
 	}
 
-	if err := c.manageMutatingWebhook(ctx, ownerReference); err != nil {
+	if err := c.manageMutatingWebhook(ctx, ownerReference, sliceOperator); err != nil {
 		return err
 	}
 	_, _, err = c.manageIssuerCR(ctx, ownerReference)
@@ -192,7 +191,7 @@ func (c *TargetConfigReconciler) sync(ctx context.Context, syncCtx factory.SyncC
 		return fmt.Errorf("failed to get das-operator deployment status: %w", err)
 	}
 
-	if err := c.updateOperatorStatus(ctx, operatorDeployment, daemonset, scheduler, webhook); err != nil {
+	if err := c.updateOperatorStatus(ctx, operatorDeployment, daemonset, scheduler, webhook, sliceOperator); err != nil {
 		return fmt.Errorf("failed to update operator status: %w", err)
 	}
 
@@ -211,7 +210,7 @@ func (c *TargetConfigReconciler) manageWebhookCertSecret() (*corev1.Secret, bool
 	return secret, true, nil
 }
 
-func (c *TargetConfigReconciler) manageMutatingWebhookDeployment(ctx context.Context, ownerReference metav1.OwnerReference) (*appsv1.Deployment, error) {
+func (c *TargetConfigReconciler) manageMutatingWebhookDeployment(ctx context.Context, ownerReference metav1.OwnerReference, sliceOperator *slicev1alpha1.DASOperator) (*appsv1.Deployment, error) {
 	required := resourceread.ReadDeploymentV1OrDie(bindata.MustAsset("assets/instaslice-operator/webhook-deployment.yaml"))
 	required.Namespace = c.namespace
 	required.OwnerReferences = []metav1.OwnerReference{
@@ -225,12 +224,12 @@ func (c *TargetConfigReconciler) manageMutatingWebhookDeployment(ctx context.Con
 	if err := injectCertManagerCA(required, c.namespace); err != nil {
 		return nil, err
 	}
-	deployment, updated, err := resourceapply.ApplyDeployment(ctx, c.kubeClient.AppsV1(), c.eventRecorder, required, resourcemerge.ExpectedDeploymentGeneration(required, c.generations))
+	deployment, updated, err := resourceapply.ApplyDeployment(ctx, c.kubeClient.AppsV1(), c.eventRecorder, required, resourcemerge.ExpectedDeploymentGeneration(required, sliceOperator.Status.Generations))
 	if err != nil {
 		return nil, err
 	}
 	if updated {
-		resourcemerge.SetDeploymentGeneration(&c.generations, deployment)
+		resourcemerge.SetDeploymentGeneration(&sliceOperator.Status.Generations, deployment)
 	}
 	return deployment, nil
 }
@@ -248,7 +247,7 @@ func (c *TargetConfigReconciler) manageMutatingWebhookService(ctx context.Contex
 	return nil
 }
 
-func (c *TargetConfigReconciler) manageMutatingWebhook(ctx context.Context, ownerReference metav1.OwnerReference) error {
+func (c *TargetConfigReconciler) manageMutatingWebhook(ctx context.Context, ownerReference metav1.OwnerReference, sliceOperator *slicev1alpha1.DASOperator) error {
 	required := resourceread.ReadMutatingWebhookConfigurationV1OrDie(bindata.MustAsset("assets/instaslice-operator/webhook.yaml"))
 	required.Namespace = c.namespace
 	required.OwnerReferences = []metav1.OwnerReference{
@@ -266,12 +265,12 @@ func (c *TargetConfigReconciler) manageMutatingWebhook(ctx context.Context, owne
 		return err
 	}
 	if updated {
-		resourcemerge.SetMutatingWebhooksConfigurationGeneration(&c.generations, mutatingWebhook)
+		resourcemerge.SetMutatingWebhooksConfigurationGeneration(&sliceOperator.Status.Generations, mutatingWebhook)
 	}
 	return nil
 }
 
-func (c *TargetConfigReconciler) manageScheduler(ctx context.Context, ownerReference metav1.OwnerReference) (*appsv1.Deployment, error) {
+func (c *TargetConfigReconciler) manageScheduler(ctx context.Context, ownerReference metav1.OwnerReference, sliceOperator *slicev1alpha1.DASOperator) (*appsv1.Deployment, error) {
 	specAnnotations := make(map[string]string)
 
 	schedulerConfig := resourceread.ReadConfigMapV1OrDie(bindata.MustAsset("assets/instaslice-operator/scheduler_config.yaml"))
@@ -349,18 +348,18 @@ func (c *TargetConfigReconciler) manageScheduler(ctx context.Context, ownerRefer
 		}
 	}
 	resourcemerge.MergeMap(ptr.To(false), &scheduler.Spec.Template.Annotations, specAnnotations)
-	deployment, updated, err := resourceapply.ApplyDeployment(ctx, c.kubeClient.AppsV1(), c.eventRecorder, scheduler, resourcemerge.ExpectedDeploymentGeneration(scheduler, c.generations))
+	deployment, updated, err := resourceapply.ApplyDeployment(ctx, c.kubeClient.AppsV1(), c.eventRecorder, scheduler, resourcemerge.ExpectedDeploymentGeneration(scheduler, sliceOperator.Status.Generations))
 	if err != nil {
 		return nil, err
 	}
 	if updated {
-		resourcemerge.SetDeploymentGeneration(&c.generations, deployment)
+		resourcemerge.SetDeploymentGeneration(&sliceOperator.Status.Generations, deployment)
 	}
 
 	return deployment, nil
 }
 
-func (c *TargetConfigReconciler) manageDaemonset(ctx context.Context, ownerReference metav1.OwnerReference) (*appsv1.DaemonSet, error) {
+func (c *TargetConfigReconciler) manageDaemonset(ctx context.Context, ownerReference metav1.OwnerReference, sliceOperator *slicev1alpha1.DASOperator) (*appsv1.DaemonSet, error) {
 	required := resourceread.ReadDaemonSetV1OrDie(bindata.MustAsset("assets/instaslice-operator/daemonset.yaml"))
 	required.Namespace = c.namespace
 	required.OwnerReferences = []metav1.OwnerReference{
@@ -388,12 +387,12 @@ func (c *TargetConfigReconciler) manageDaemonset(ctx context.Context, ownerRefer
 		c.appsClient,
 		c.eventRecorder,
 		required,
-		resourcemerge.ExpectedDaemonSetGeneration(required, c.generations))
+		resourcemerge.ExpectedDaemonSetGeneration(required, sliceOperator.Status.Generations))
 	if err != nil {
 		return nil, err
 	}
 	if updated {
-		resourcemerge.SetDaemonSetGeneration(&c.generations, daemonset)
+		resourcemerge.SetDaemonSetGeneration(&sliceOperator.Status.Generations, daemonset)
 	}
 	return daemonset, nil
 }
@@ -470,7 +469,7 @@ func isResourceRegistered(discoveryClient discovery.DiscoveryInterface, gvk sche
 }
 
 // updateOperatorStatus calculates and updates the DAS operator status based on component health.
-func (c *TargetConfigReconciler) updateOperatorStatus(ctx context.Context, operatorDeployment *appsv1.Deployment, daemonset *appsv1.DaemonSet, scheduler *appsv1.Deployment, webhook *appsv1.Deployment) error {
+func (c *TargetConfigReconciler) updateOperatorStatus(ctx context.Context, operatorDeployment *appsv1.Deployment, daemonset *appsv1.DaemonSet, scheduler *appsv1.Deployment, webhook *appsv1.Deployment, sliceOperator *slicev1alpha1.DASOperator) error {
 	operatorReadyReplicas := operatorDeployment.Status.ReadyReplicas
 
 	// Check component health for conditions
@@ -502,6 +501,7 @@ func (c *TargetConfigReconciler) updateOperatorStatus(ctx context.Context, opera
 	_, _, err := v1helpers.UpdateStatus(ctx, c.instasliceoperatorClient, func(status *operatorsv1.OperatorStatus) error {
 		status.ReadyReplicas = operatorReadyReplicas
 		status.Conditions = conditions
+		status.Generations = sliceOperator.Status.Generations
 		return nil
 	})
 
